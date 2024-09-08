@@ -87,8 +87,13 @@ resource "aws_instance" "demo_instance" {
 
 # RDS MySQL Instance
 resource "aws_db_subnet_group" "demo_subnet_group" {
-  name       = "demo-subnet-group"
+  name       = "demo-subnet-group-${random_id.suffix.hex}"
   subnet_ids = [aws_subnet.demo_subnet_1.id, aws_subnet.demo_subnet_2.id]
+}
+
+# Add this resource to generate a random suffix
+resource "random_id" "suffix" {
+  byte_length = 4
 }
 
 resource "aws_db_instance" "demo_db" {
@@ -112,7 +117,7 @@ resource "aws_cloudwatch_metric_alarm" "cpu_alarm" {
   evaluation_periods  = "2"
   metric_name         = "CPUUtilization"
   namespace           = "AWS/EC2"
-  period              = "300"
+  period              = "120"  # Changed from 300 to 120 seconds (2 minutes)
   statistic           = "Average"
   threshold           = "10"
   alarm_description   = "This metric monitors ec2 cpu utilization"
@@ -148,7 +153,7 @@ resource "aws_iam_role" "resize_instance_lambda_role" {
 
 # IAM policy for Lambda
 resource "aws_iam_role_policy" "lambda_policy" {
-  role = aws_iam_role.lambda_role.id
+  role = aws_iam_role.resize_instance_lambda_role.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -156,8 +161,10 @@ resource "aws_iam_role_policy" "lambda_policy" {
       {
         Effect = "Allow"
         Action = [
-          "ec2:ModifyInstanceAttribute",
-          "ec2:DescribeInstances"
+          "ec2:DescribeInstances",
+          "ec2:StopInstances",
+          "ec2:StartInstances",
+          "ec2:ModifyInstanceAttribute"
         ]
         Resource = "*"
       },
@@ -216,4 +223,27 @@ data "aws_ami" "amazon_linux_2" {
     name   = "virtualization-type"
     values = ["hvm"]
   }
+}
+
+# CloudWatch Events Rule to trigger Lambda periodically
+resource "aws_cloudwatch_event_rule" "periodic_lambda_trigger" {
+  name                = "trigger-resize-lambda-periodically"
+  description         = "Trigger the resize Lambda function every minute"
+  schedule_expression = "rate(1 minute)"
+}
+
+# CloudWatch Events Target
+resource "aws_cloudwatch_event_target" "lambda_target" {
+  rule      = aws_cloudwatch_event_rule.periodic_lambda_trigger.name
+  target_id = "TriggerResizeLambda"
+  arn       = aws_lambda_function.resize_instance.arn
+}
+
+# Lambda permission for CloudWatch Events
+resource "aws_lambda_permission" "allow_cloudwatch_to_call_lambda" {
+  statement_id  = "AllowExecutionFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.resize_instance.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.periodic_lambda_trigger.arn
 }
