@@ -1,0 +1,47 @@
+name: Terraform Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v1
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: eu-central-1
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        run: terraform plan
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve
+
+      - name: Trigger Rightsizing
+        run: |
+          aws lambda invoke \
+            --function-name rightsizing_function \
+            --payload '{"action":"rightsizing"}' \
+            response.json
+
+      - name: Trigger Scale Down
+        run: |
+          aws events put-targets --rule scale_down_rule --targets "[{\"Id\": \"1\", \"Arn\": \"$(aws lambda get-function --function-name scale_down_lambda | jq -r .Configuration.FunctionArn)\"}]"
+
+      - name: Trigger Waste Detection
+        run: |
+          aws events put-targets --rule waste_detection_rule --targets "[{\"Id\": \"1\", \"Arn\": \"$(aws lambda get-function --function-name waste_detection_lambda | jq -r .Configuration.FunctionArn)\"}]"
