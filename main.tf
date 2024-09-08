@@ -247,3 +247,108 @@ resource "aws_lambda_permission" "allow_cloudwatch_to_call_lambda" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.periodic_lambda_trigger.arn
 }
+
+# CloudWatch Event Rule for scheduled shutdown
+resource "aws_cloudwatch_event_rule" "scheduled_shutdown" {
+  name                = "scheduled-instance-shutdown"
+  description         = "Shut down EC2 instance on weekends"
+# schedule_expression = "cron(0 18 ? * FRI *)"  # 6 PM every Friday
+# schedule_expression = "cron(${formatdate("m H", timeadd(timestamp(), "2m"))} * * ? *)" # 2 mins from tf apply
+  schedule_expression = "cron(*/5 * ? * * *)" # "rate(5 minute)"
+}
+
+# CloudWatch Event Target for shutdown
+resource "aws_cloudwatch_event_target" "shutdown_instance" {
+  rule      = aws_cloudwatch_event_rule.scheduled_shutdown.name
+  target_id = "ShutdownEC2Instance"
+  arn       = aws_lambda_function.instance_scheduler.arn
+  input     = jsonencode({
+    action   = "stop"
+    instance = aws_instance.demo_instance.id
+  })
+}
+
+# CloudWatch Event Rule for scheduled startup
+resource "aws_cloudwatch_event_rule" "scheduled_startup" {
+  name                = "scheduled-instance-startup"
+  description         = "Start EC2 instance on weekdays"
+#  schedule_expression = "cron(0 6 ? * MON *)"  # 6 AM every Monday
+#  schedule_expression = "cron(${formatdate("m H", timeadd(timestamp(), "4m"))} * * ? *)" # 4 mins from tf apply
+   schedule_expression = "cron(*/10 * ? * * *)" # "rate(10 minute)"
+}
+
+# CloudWatch Event Target for startup
+resource "aws_cloudwatch_event_target" "startup_instance" {
+  rule      = aws_cloudwatch_event_rule.scheduled_startup.name
+  target_id = "StartupEC2Instance"
+  arn       = aws_lambda_function.instance_scheduler.arn
+  input     = jsonencode({
+    action   = "start"
+    instance = aws_instance.demo_instance.id
+  })
+}
+
+# Lambda function for instance scheduling
+resource "aws_lambda_function" "instance_scheduler" {
+  filename         = "${path.module}/lambda/instance_scheduler.zip"
+  function_name    = "instance_scheduler_function"
+  role             = aws_iam_role.instance_scheduler_lambda_role.arn
+  handler          = "instance_scheduler.lambda_handler"
+  runtime          = "python3.9"
+  source_code_hash = filebase64sha256("${path.module}/lambda/instance_scheduler.zip")
+}
+
+# IAM role for instance scheduler Lambda
+resource "aws_iam_role" "instance_scheduler_lambda_role" {
+  name = "instance_scheduler_lambda_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM policy for instance scheduler Lambda
+resource "aws_iam_role_policy" "instance_scheduler_lambda_policy" {
+  role = aws_iam_role.instance_scheduler_lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:StartInstances",
+          "ec2:StopInstances"
+        ]
+        Resource = aws_instance.demo_instance.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+# Lambda permissions for CloudWatch Events
+resource "aws_lambda_permission" "allow_cloudwatch_to_call_scheduler" {
+  statement_id  = "AllowExecutionFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.instance_scheduler.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.scheduled_shutdown.arn
+}

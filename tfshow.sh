@@ -36,8 +36,8 @@ get_instance_details() {
 
 # Function to get RDS instance details
 get_rds_details() {
-    aws rds describe-db-instances --query "DBInstances[].[DBInstanceIdentifier, DBInstanceClass]" --output text | while read -r id class; do
-        echo -e "aws_db_instance\t$id\t$class\tN/A"
+    aws rds describe-db-instances --query "DBInstances[].[DBInstanceIdentifier, DBInstanceClass, DBInstanceStatus]" --output text | while read -r id class status; do
+        echo -e "aws_db_instance\t$id\t$class\t$status"
     done
 }
 
