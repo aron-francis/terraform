@@ -352,3 +352,7 @@ resource "aws_lambda_permission" "allow_cloudwatch_to_call_scheduler" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.scheduled_shutdown.arn
 }
+
+output "demo_instance_id" {
+  value = aws_instance.demo_instance.id
+}
