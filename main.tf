@@ -69,10 +69,20 @@ resource "aws_security_group" "demo_sg" {
 
 # EC2 Instance
 resource "aws_instance" "demo_instance" {
-  ami           = "ami-0556dfb1a147512ba"
+  ami           = data.aws_ami.amazon_linux_2.id
   instance_type = "t3.micro"
   subnet_id     = aws_subnet.demo_subnet_1.id
   vpc_security_group_ids = [aws_security_group.demo_sg.id]
+  associate_public_ip_address = true
+
+  root_block_device {
+    volume_type = "gp2"
+    volume_size = 8
+  }
+
+  tags = {
+    Name = "demo-instance"
+  }
 }
 
 # RDS MySQL Instance
@@ -93,4 +103,117 @@ resource "aws_db_instance" "demo_db" {
   publicly_accessible   = true
   multi_az              = false
   db_subnet_group_name  = aws_db_subnet_group.demo_subnet_group.name
+}
+
+# CloudWatch Alarm for CPU Utilization
+resource "aws_cloudwatch_metric_alarm" "cpu_alarm" {
+  alarm_name          = "cpu-utilization-alarm"
+  comparison_operator = "LessThanOrEqualToThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "300"
+  statistic           = "Average"
+  threshold           = "10"
+  alarm_description   = "This metric monitors ec2 cpu utilization"
+  alarm_actions       = [aws_sns_topic.resize_topic.arn]
+
+  dimensions = {
+    InstanceId = aws_instance.demo_instance.id
+  }
+}
+
+# SNS Topic for alarm notifications
+resource "aws_sns_topic" "resize_topic" {
+  name = "resize-instance-topic"
+}
+
+# IAM role for Lambda
+resource "aws_iam_role" "resize_instance_lambda_role" {
+  name = "resize_instance_lambda_role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+# IAM policy for Lambda
+resource "aws_iam_role_policy" "lambda_policy" {
+  role = aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ec2:ModifyInstanceAttribute",
+          "ec2:DescribeInstances"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:*:*:*"
+      }
+    ]
+  })
+}
+
+# Lambda function to resize the instance
+resource "aws_lambda_function" "resize_instance" {
+  filename         = "${path.module}/lambda/resize_function.zip"
+  function_name    = "resize_instance_function"
+  role             = aws_iam_role.resize_instance_lambda_role.arn
+  handler          = "resize_function.lambda_handler"
+  runtime          = "python3.9"
+  source_code_hash = filebase64sha256("${path.module}/lambda/resize_function.zip")
+  timeout          = 60  # Increase timeout to 60 seconds
+  memory_size      = 256 # Optionally increase memory if needed
+}
+
+# SNS subscription for Lambda
+resource "aws_sns_topic_subscription" "resize_subscription" {
+  topic_arn = aws_sns_topic.resize_topic.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.resize_instance.arn
+}
+
+# Lambda permission for SNS
+resource "aws_lambda_permission" "with_sns" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.resize_instance.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.resize_topic.arn
+}
+
+# Data source for the latest Amazon Linux 2 AMI
+data "aws_ami" "amazon_linux_2" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
 }
